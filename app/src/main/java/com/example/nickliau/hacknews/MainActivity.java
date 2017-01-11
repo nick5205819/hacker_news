@@ -28,11 +28,14 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.Timer;
+import java.util.TimerTask;
 
 public class MainActivity extends AppCompatActivity {
-    public String URL_IDS = "https://hacker-news.firebaseio.com/v0/topstories.json";
-    public String URL_ART_START = "https://hacker-news.firebaseio.com/v0/item/";
-    public String URL_ART_END = ".json";
+    private static String URL_IDS = "https://hacker-news.firebaseio.com/v0/topstories.json";
+    private static String URL_ART_START = "https://hacker-news.firebaseio.com/v0/item/";
+    private static String URL_ART_END = ".json";
+    private static String URL_MAX_ID= "https://hacker-news.firebaseio.com/v0/maxitem.json";
 
     ListView listview;
     TextView textView;
@@ -42,19 +45,22 @@ public class MainActivity extends AppCompatActivity {
     SQLiteDatabase eventsDB;
     static String HACKER_NEWS_TABLE = "hacker_news_table";
     WebView webView;
-
+    int server_max_id, local_max_id;
+    Cursor cursor = null;
+    boolean firsttime = true;
+    boolean downloading = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
         setContentView(R.layout.activity_main);
-        //Toolbar toolbar = (Toolbar) findViewById(R.id.);
 
         listview = (ListView) findViewById(R.id.listUrl);
         textView = (TextView) findViewById(R.id.ShowDownloadText);
         titlelist = new ArrayList<>();
         URLlist = new ArrayList<>();
+        local_max_id = 0;
 
         adapter = new ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, titlelist);
         listview.setAdapter(adapter);
@@ -63,23 +69,34 @@ public class MainActivity extends AppCompatActivity {
         listview.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override
             public void onItemClick(AdapterView<?> adapterView, View view, int i, long l) {
-//                Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(URLlist.get(i)));
-//                startActivity(browserIntent);
-
-
-                webView.getSettings().setJavaScriptEnabled(true);
-                webView.setWebViewClient(new WebViewClient());
-                webView.loadUrl(URLlist.get(i));
-                webView.setVisibility(View.VISIBLE);
+                    webView.getSettings().setJavaScriptEnabled(true);
+                    webView.setWebViewClient(new WebViewClient());
+                    webView.loadUrl(URLlist.get(i));
+                    webView.setVisibility(View.VISIBLE);
             }
         });
 
         if (OpenOrCreateDatabase()) {
-            Log.e("Nick", "Create database Success");
-            new DownloadTask().execute();
+            Log.e("Nick", "Create or open database Success");
+            downloadRepeatedly();
         } else {
             Log.e("Nick", "Create database failed");
         }
+    }
+
+    private void downloadRepeatedly() {
+        Timer timer = new Timer();
+        timer.scheduleAtFixedRate( new TimerTask() {
+            public void run() {
+                Log.d ("Nick", "size of list " + titlelist.size());
+                try{
+                    new DownloadTask().execute();
+                }
+                catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        }, 0, 5000000);
     }
 
     @Override
@@ -98,33 +115,44 @@ public class MainActivity extends AppCompatActivity {
         eventsDB.close();
     }
 
-//    public void UpdateAdapter (Cursor cursor) {
-//        // TODO Auto-generated method stub
-//        if (cursor != null && cursor.getCount() > 0) {
-//            SimpleCursorAdapter adapter = new SimpleCursorAdapter(this,
-//                    android.R.layout.simple_list_item_2, cursor, new String[] {
-//                    "title", "price"}, new int[] { android.R.id.text1, android.R.id.text2 } );
-//            }
-//        }
-//    }
 
     class DownloadTask extends AsyncTask<Void, String, Void> {
-
+        String a , b;
         @Override
         protected Void doInBackground(Void... Params) {
             String resArray = "";
+            String max_id = "";
             HttpURLConnection connection = null;
             InputStream in = null;
-            InputStreamReader inReader = null;
+            InputStreamReader inReader;
+
 
             try {
                 URL urlid = new URL(URL_IDS);
+                URL maxid = new URL(URL_MAX_ID);
+                //get max id
+                connection = (HttpURLConnection)maxid.openConnection();
+                in = connection.getInputStream();
+                inReader = new InputStreamReader(in);
+                int getid = inReader.read();
+                char current;
+                while (getid != -1) {
+                    current = (char) getid;
+                    max_id += current;
+
+                    getid = inReader.read();
+                }
+                server_max_id = Integer.parseInt(max_id);
+
+                if (server_max_id <= local_max_id) {
+                    return null;
+                }
+
                 connection = (HttpURLConnection) urlid.openConnection();
                 in = connection.getInputStream();
                 inReader = new InputStreamReader(in);
 
                 int data = inReader.read();
-                char current;
                 while (data != -1) {
                     current = (char) data;
                     resArray += current;
@@ -134,6 +162,23 @@ public class MainActivity extends AppCompatActivity {
 
                 JSONArray jsonArray = new JSONArray(resArray);
                 int index = 0;
+                if (firsttime) {
+                    int titleIndex = cursor.getColumnIndex("title");
+                    int urlIndex = cursor.getColumnIndex("URL");
+
+                    downloading = true;
+                    for (cursor.moveToFirst(); !cursor.isAfterLast(); cursor.moveToNext()) {
+                        a = cursor.getString(titleIndex);
+                        b = cursor.getString(urlIndex);
+                        titlelist.add("" + titlelist.size() + ". " + a);
+                        URLlist.add(b);
+
+                        index++;
+                    }
+                    downloading = false;
+                    firsttime = false;
+                }
+
                 for (int i = 0; i < jsonArray.length(); i ++) {
                     String id = jsonArray.getString(i);
                     URL artURL = new URL(URL_ART_START + id + URL_ART_END);
@@ -151,21 +196,33 @@ public class MainActivity extends AppCompatActivity {
 
                     JSONObject jsonObject = new JSONObject(jsonobjectstring);
 
-                    if (jsonObject.has("title") && jsonObject.has("url")) {
-                        titlelist.add(jsonObject.getString("title"));
-                        URLlist.add(jsonObject.getString("url"));
+                    if (jsonObject.has("title") && jsonObject.has("url") ) {
+                        a = jsonObject.getString("title");
+                        b = jsonObject.getString("url");
 
-                        Log.d("Nick", "id: " + jsonObject.getInt("id") + " title" +
-                                jsonObject.getString("title") + " by: " + jsonObject.getString("by")
-                        + " url: " + jsonObject.getString("url"));
+                        if (local_max_id < jsonObject.getInt("id"))
+                            local_max_id = jsonObject.getInt("id");
 
-                        InsertDataToDatabase(jsonObject.getInt("id"), jsonObject.getString("title"),
-                                jsonObject.getString("by"), jsonObject.getString("url"));
-                        publishProgress("Downloading...: " + index + " articles");
-                        index ++;
+                        if (InsertDataToDatabase(jsonObject.getInt("id"), jsonObject.getString("title"),
+                                jsonObject.getString("by"), jsonObject.getString("url"))) {
+                            Log.d("Nick", "id: " + jsonObject.getInt("id") + " title" +
+                                    jsonObject.getString("title") + " by: " + jsonObject.getString("by")
+                                    + " url: " + jsonObject.getString("url"));
+                            downloading = true;
+                            publishProgress("Downloading...: " + index + " articles");
+                            index++;
+                        } else {
+                            downloading = false;
+                            if (0 == i % 3) {
+                                publishProgress("Check server update.." );
+                            } else if (1 == i % 3) {
+                                publishProgress("Check server update....");
+                            } else {
+                                publishProgress("Check server update......");
+                            }
+                        }
                     }
                 }
-
             } catch (Exception e) {
                 e.printStackTrace();
             } finally {
@@ -182,6 +239,8 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
 
+            publishProgress("finish");
+
             return null;
         }
 
@@ -192,6 +251,12 @@ public class MainActivity extends AppCompatActivity {
             String update = values[0];
             textView.setText(update);
             textView.setVisibility(View.VISIBLE);
+
+            if (downloading) {
+                titlelist.add("" + titlelist.size() + ". " + a);
+                URLlist.add(b);
+            }
+            adapter.notifyDataSetChanged();
         }
 
         @Override
@@ -200,6 +265,7 @@ public class MainActivity extends AppCompatActivity {
 
             adapter.notifyDataSetChanged();
             textView.setVisibility(View.GONE);
+            firsttime = false;
         }
     }
 
@@ -207,16 +273,8 @@ public class MainActivity extends AppCompatActivity {
         try {
             eventsDB = this.openOrCreateDatabase("HackerNews", MODE_PRIVATE, null);
             eventsDB.execSQL("CREATE TABLE IF NOT EXISTS hacker_news_table (id INT(11), title VARCHAR, name VARCHAR, URL VARCHAR)");
-//            eventsDB.execSQL("INSERT INTO newUsers (name, age) VALUES ('Nick', 20)");
-//            eventsDB.execSQL("INSERT INTO newUsers (name, age) VALUES ('Jeff', 30)");
-//            Cursor c = eventsDB.rawQuery("SELECT * FROM newUsers", null);
-//            int eventIndex = c.getColumnIndex("name");
-//            int yearIndex = c.getColumnIndex("age");
-//            c.moveToFirst();
-//            while (c != null) {
-//                Log.i("Results - name", c.getString(eventIndex));
-//                c.moveToNext();
-//            }
+
+            cursor = eventsDB.rawQuery("SELECT * FROM " + HACKER_NEWS_TABLE, null);
         } catch (Exception e) {
             e.printStackTrace();
             return false;
@@ -225,6 +283,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private boolean InsertDataToDatabase(int id, String title, String name, String url) {
+        if (CheckIsDataAlreadyInDBorNot(id))
+            return false;
+
         ContentValues cv = new ContentValues();
         cv.put("id", id);
         cv.put("title", title);
@@ -236,7 +297,17 @@ public class MainActivity extends AppCompatActivity {
             e.printStackTrace();
             return false;
         }
-        Log.d("Nick", "Insert data to database success");
+        return true;
+    }
+
+    public boolean CheckIsDataAlreadyInDBorNot(int queryid) {
+        String Query = "SELECT * FROM " + HACKER_NEWS_TABLE + " WHERE id=" + queryid;
+        Cursor cursor = eventsDB.rawQuery(Query, null);
+        if(cursor.getCount() <= 0){
+            cursor.close();
+            return false;
+        }
+        cursor.close();
         return true;
     }
 }
